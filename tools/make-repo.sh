@@ -15,12 +15,37 @@ MP=$(diskutil info "$DEV" | sed -n 's/.*Mount Point: *//p' | head -1)
 OC="$MP/EFI/OC"
 [ -f "$OC/config.plist" ] || { echo "sem $OC/config.plist"; exit 1; }
 
-rm -rf "$OUT" "$ZIP"
+if [ -d "$OUT/.git" ]; then
+	find "$OUT" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+else
+	rm -rf "$OUT"
+fi
+rm -f "$ZIP"
 mkdir -p "$OUT/EFI/OC" "$OUT/tools" "$OUT/docs"
 
 cp -R "$OC/ACPI" "$OC/Kexts" "$OC/Drivers" "$OUT/EFI/OC/" || exit 1
 cp "$OC/config.plist" "$OUT/EFI/OC/config.plist" || exit 1
 [ -f "$OC/OpenCore.efi" ] && cp "$OC/OpenCore.efi" "$OUT/EFI/OC/"
+
+python3 - "$OUT/EFI/OC" <<'PY'
+import os, plistlib, sys
+oc = sys.argv[1]
+cfg = plistlib.load(open(os.path.join(oc, "config.plist"), "rb"))
+used = {e["Path"] for e in cfg["ACPI"]["Add"]}
+adir = os.path.join(oc, "ACPI")
+removed = []
+for name in sorted(os.listdir(adir)):
+    base, ext = os.path.splitext(name)
+    if ext not in (".aml", ".dsl"):
+        continue
+    if base + ".aml" not in used:
+        os.remove(os.path.join(adir, name))
+        removed.append(name)
+print("ACPI: %d mantidos, %d removidos (nao referenciados no config)"
+      % (len(os.listdir(adir)), len(removed)))
+if removed:
+    print("  removidos:", ", ".join(removed))
+PY
 
 for f in "$DIR"/add-bootarg.sh "$DIR"/backup-efi.sh "$DIR"/enable-dgpu.sh \
 	"$DIR"/restore-efi-config.sh "$DIR"/verify-usb.sh "$DIR"/sync-usb-stable.sh \
@@ -79,10 +104,10 @@ if hit:
 PY
 done
 
-chown -R "$(stat -f%Su /dev/console)" "$OUT" 2>/dev/null
+chown -R "${SUDO_USER:-$(stat -f%Su /dev/console)}" "$OUT" 2>/dev/null
 
 ( cd "$DIR" && zip -qry "$ZIP" "repo-$NAME" ) || { echo "falha no zip"; exit 1; }
-chown "$(stat -f%Su /dev/console)" "$ZIP" 2>/dev/null
+chown "${SUDO_USER:-$(stat -f%Su /dev/console)}" "$ZIP" 2>/dev/null
 
 echo
 echo "repo: $OUT"

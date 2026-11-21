@@ -18,7 +18,7 @@ mkdir -p "$OUT"
 cp -R "$MP/EFI/OC/." "$OUT/" || { echo "falha ao copiar"; exit 1; }
 ( cd "$OUT" && find . -type f -exec md5 -q {} \; -print | paste - - > manifest-md5.txt )
 
-chown -R "$(stat -f%Su /dev/console)" "$OUT" 2>/dev/null
+chown -R "${SUDO_USER:-$(stat -f%Su /dev/console)}" "$OUT" 2>/dev/null
 
 echo "backup: $OUT"
 du -sh "$OUT"

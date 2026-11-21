@@ -102,5 +102,5 @@ print("problemas: %d" % bad)
 PY
 } > "$OUT" 2>&1
 
-chown "$(stat -f%Su /dev/console)" "$OUT" 2>/dev/null
+chown "${SUDO_USER:-$(stat -f%Su /dev/console)}" "$OUT" 2>/dev/null
 cat "$OUT"
