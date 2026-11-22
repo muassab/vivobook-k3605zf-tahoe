@@ -94,8 +94,9 @@ Full write-up, build and rollback: `docs/BACKLIGHT.md`.
 Keep `AirportMtkBt` **2.2.1**: 2.2.2 dropped the MT7902 firmware and the
 `13D3:3579` personality, so updating the Bluetooth kexts alone disables the
 radio. BLE HID (mouse/keyboard) stops delivering reports after the first
-reconnect; the workaround is a 2.4 GHz dongle. Details and evidence:
-`docs/BLUETOOTH-MT7902.md`.
+reconnect; `tools/bt-recover.sh` restarts `bluetoothd` and brings it back
+without a reboot. Permanent workaround: a 2.4 GHz dongle. Details and
+evidence: `docs/BLUETOOTH-MT7902.md`.
 
 ## Boot arguments
 

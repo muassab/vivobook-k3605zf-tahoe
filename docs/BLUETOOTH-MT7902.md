@@ -74,6 +74,22 @@ conectaram, mas:
 Resultado pior que o estado original. Revertido. Não repita sem uma correção
 real no fluxo WMT/firmware.
 
+## Recuperação sem reboot (verificado)
+
+Reiniciar o `bluetoothd` recria o HID shim e o mouse volta a entregar reports:
+
+```sh
+tools/bt-recover.sh
+```
+
+Medido em 2026-11-22: queda às 18:04:54 (`reason 719`), reconexão às 18:05:51
+sem HID; `launchctl kickstart -k system/com.apple.bluetoothd` recriou o
+`IOHIDUserDevice` e o contador foi de 141 para 421 eventos.
+
+O script pede senha de admin (diálogo do macOS). Não recarrega firmware: o
+estado quebrado está no `bluetoothd`, não no chip — por isso o toggle de
+Bluetooth não resolve, mas o restart do daemon sim.
+
 ## Workaround
 
 - **Mouse**: use o receptor 2.4 GHz (dongle USB). Zero kext, imune ao bug.
