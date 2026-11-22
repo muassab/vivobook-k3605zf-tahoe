@@ -26,7 +26,10 @@ macOS  26.7.3 (Tahoe)  OpenCore 1.0.8
 - Boot, audio (AppleALC), keyboard/touchpad (VoodooPS2 + VoodooI2C), battery
   (SMCBatteryManager), brightness, camera, USB ports
 - iGPU with Metal 2 acceleration (WhateverXe + WhateverXe Graphics package)
-- MediaTek MT7902 Wi-Fi and Bluetooth with the kexts in this repository
+- Keyboard backlight: `F7` and `Fn+F7` cycle off → 1 → 2 → 3 → off
+  (patched AsusSMC + `SSDT-ATKH` + `tools/asuskeys`, see `docs/BACKLIGHT.md`)
+- MediaTek MT7902 Wi-Fi and Bluetooth classic with the kexts in this
+  repository (BLE HID has a known limit, see below)
 - NVIDIA RTX 2050 with Metal 4 and compute (NullMoth 3.0 driver, outside the EFI)
 
 ## What does not work (known limits)
@@ -39,17 +42,23 @@ macOS  26.7.3 (Tahoe)  OpenCore 1.0.8
   USB-C is USB 3.2 Gen 1 + PD only) and the monitor only reaches 165 Hz over DP.
 - **The dGPU drives no display**: the internal panel and HDMI are wired to the
   iGPU, with no mux. The RTX 2050 is useful for Metal compute only.
+- **BLE HID (Bluetooth mouse/keyboard)**: after the first reconnect the link
+  comes up and GATT subscribes, but no HID reports arrive; only a reboot
+  restores it. Use the mouse's 2.4 GHz dongle or a Broadcom USB dongle.
+  See `docs/BLUETOOTH-MT7902.md`.
 - USB-C 3.0 not validated.
 
 ## Layout
 
 ```
 EFI/OC/config.plist     OpenCore configuration (SMBIOS sanitized)
-EFI/OC/ACPI/            SSDTs (PLUG-ALT, EC-USBX, PNLF, USB-Reset, MCHC, SBUS, HPET)
+EFI/OC/ACPI/            SSDTs (PLUG-ALT, EC-USBX, PNLF, USB-Reset, MCHC, SBUS, HPET, ATKH)
 EFI/OC/Kexts/           kexts (see list below)
 EFI/OC/Drivers/         OpenRuntime, OpenHfsPlus, OpenCanopy, ResetNvramEntry
 EFI/OC/OpenCore.efi     OpenCore 1.0.8 (REL-108-2026-09-27)
+patches/                source patches (AsusSMC keyboard backlight)
 tools/                  maintenance scripts (backup, sync, rollback, boot-args)
+tools/asuskeys/         F-row daemon, asusbl CLI, backlight hook
 docs/                   plans and reports for this machine
 ```
 
@@ -63,7 +72,7 @@ docs/                   plans and reports for this machine
 | AMFIPass | allows unsigned kexts |
 | CpuTscSync, CpuTopologyRebuild | TSC and hybrid P/E topology |
 | RestrictEvents | hides hardware notices |
-| AsusSMC, BrightnessKeys | ASUS EC / brightness |
+| AsusSMC, BrightnessKeys | ASUS EC / brightness / keyboard backlight (patched) |
 | VoodooI2C (+Services, GPIO), VoodooI2CHID | I2C touchpad |
 | VoodooPS2Controller (+Input, Keyboard, Mouse, Trackpad) | PS/2 keyboard |
 | AppleALC, SimpleHDA | audio |
@@ -72,6 +81,21 @@ docs/                   plans and reports for this machine
 | AirportMtkWlan | MediaTek MT7902 Wi-Fi |
 | AirportMtkBtFw, AirportMtkBtPatcher, BlueToolFixup | MT7902 Bluetooth |
 | SimpleMtkWlan | alternative Wi-Fi driver (disabled) |
+
+## Keyboard backlight
+
+`F7` and `Fn+F7` cycle the keyboard backlight: off → 1 → 2 → 3 → off.
+Needs `SSDT-ATKH.aml`, the two ACPI patches in `config.plist`, the patched
+`AsusSMC.kext` and the `tools/asuskeys` daemon (keycode 98 → `asusbl`).
+Full write-up, build and rollback: `docs/BACKLIGHT.md`.
+
+## Bluetooth
+
+Keep `AirportMtkBt` **2.2.1**: 2.2.2 dropped the MT7902 firmware and the
+`13D3:3579` personality, so updating the Bluetooth kexts alone disables the
+radio. BLE HID (mouse/keyboard) stops delivering reports after the first
+reconnect; the workaround is a 2.4 GHz dongle. Details and evidence:
+`docs/BLUETOOTH-MT7902.md`.
 
 ## Boot arguments
 

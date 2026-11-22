@@ -70,6 +70,14 @@
 				<key>Path</key>
 				<string>SSDT-HPET.aml</string>
 			</dict>
+			<dict>
+				<key>Comment</key>
+				<string>ASUS ATK hotkeys + keyboard backlight</string>
+				<key>Enabled</key>
+				<true/>
+				<key>Path</key>
+				<string>SSDT-ATKH.aml</string>
+			</dict>
 		</array>
 		<key>Delete</key>
 		<array>
@@ -555,6 +563,76 @@
 				<key>Replace</key>
 				<data>
 				CEVDT0sBCE9LRUMB
+				</data>
+				<key>ReplaceMask</key>
+				<data>
+				</data>
+				<key>Skip</key>
+				<integer>0</integer>
+				<key>TableLength</key>
+				<integer>0</integer>
+				<key>TableSignature</key>
+				<data>
+				RFNEVA==
+				</data>
+			</dict>
+			<dict>
+				<key>Comment</key>
+				<string>Rewrite ATKP gate to XTKP in If predicates</string>
+				<key>Count</key>
+				<integer>0</integer>
+				<key>Enabled</key>
+				<true/>
+				<key>Find</key>
+				<data>
+				oABBVEtQ
+				</data>
+				<key>Limit</key>
+				<integer>0</integer>
+				<key>Mask</key>
+				<data>
+				/wD/////
+				</data>
+				<key>Replace</key>
+				<data>
+				oABYVEtQ
+				</data>
+				<key>ReplaceMask</key>
+				<data>
+				AAD/////
+				</data>
+				<key>Skip</key>
+				<integer>0</integer>
+				<key>TableSignature</key>
+				<data>
+				RFNEVA==
+				</data>
+			</dict>
+			<dict>
+				<key>Base</key>
+				<string></string>
+				<key>BaseSkip</key>
+				<integer>0</integer>
+				<key>Comment</key>
+				<string>Bypass KBLC bit7 gate on _Q16/_Q17 so IANE 0xC4/0xC5 always fires (And -&gt; Or)</string>
+				<key>Count</key>
+				<integer>2</integer>
+				<key>Enabled</key>
+				<true/>
+				<key>Find</key>
+				<data>
+				e0tCTEMKgGE=
+				</data>
+				<key>Limit</key>
+				<integer>0</integer>
+				<key>Mask</key>
+				<data>
+				</data>
+				<key>OemTableId</key>
+				<string></string>
+				<key>Replace</key>
+				<data>
+				fUtCTEMKgGE=
 				</data>
 				<key>ReplaceMask</key>
 				<data>
@@ -1803,6 +1881,14 @@
 				<key>SystemAudioVolume</key>
 				<data>
 				Rg==
+				</data>
+				<key>bluetoothExternalDongleFailed</key>
+				<data>
+				AA==
+				</data>
+				<key>bluetoothInternalControllerInfo</key>
+				<data>
+				AAAAAAAAAAAAAAAAAAA=
 				</data>
 				<key>boot-args</key>
 				<string>-v debug=0x100 keepsyms=1 -allow3d -disablegfxfirmware -igfxdvmt ctrsmt=full revpatch=sbvmm alcid=11 -vi2c-force-polling TSC_sync_margin=0 -wex-adlp-allow-vcs2 nvfb=1 nvaccel=1 nvfbheads=4 -nvkmsnosmooth amfi_get_out_of_my_way=0x1 amfi=0x80 ipc_control_port_options=0</string>

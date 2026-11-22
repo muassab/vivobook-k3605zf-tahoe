@@ -1,0 +1,429 @@
+--- a/AsusSMC/AsusSMC.cpp
++++ b/AsusSMC/AsusSMC.cpp
+@@ -6,6 +6,7 @@
+ //
+ 
+ #include "AsusSMC.hpp"
++#include <IOKit/IOUserClient.h>
+ 
+ bool ADDPR(debugEnabled) = false;
+ uint32_t ADDPR(debugPrintDelay) = 0;
+@@ -13,6 +14,16 @@
+ #define super IOService
+ OSDefineMetaClassAndStructors(AsusSMC, IOService)
+ 
++static const int kKBMaxLevel = 3;
++static const uint8_t kKBLevels[] = {0x80, 0x81, 0x82, 0x83};
++static const int kKBLevelCount = sizeof(kKBLevels) / sizeof(kKBLevels[0]);
++
++static inline uint8_t kbLevelValue(int level) {
++    if (level <= 0) return 0x80;
++    if (level > kKBMaxLevel) level = kKBMaxLevel;
++    return (uint8_t)(0x80 | level);
++}
++
+ bool AsusSMC::init(OSDictionary *dict) {
+     if (!super::init(dict)) {
+         return false;
+@@ -92,6 +103,7 @@
+     }
+ 
+     setProperty("IsTouchpadEnabled", true);
++    setProperty("IOUserClientClass", "AsusSMCUserClient");
+     setProperty("Copyright", "Copyright © 2018-2020 Le Bao Hiep. All rights reserved.");
+ 
+     extern kmod_info_t kmod_info;
+@@ -108,10 +120,28 @@
+ 
+     registerService();
+ 
++    if (hasKeyboardBacklight && checkKernelArgument("-kbblsweep")) {
++        sweepTimer = IOTimerEventSource::timerEventSource(this, [](OSObject *object, IOTimerEventSource *sender) {
++            auto self = OSDynamicCast(AsusSMC, object);
++            if (self) self->sweepKBBN();
++        });
++        if (sweepTimer && workloop->addEventSource(sweepTimer) == kIOReturnSuccess) {
++            sweepTimer->setTimeoutMS(2000);
++            setProperty("KBBLSweepStarted", kOSBooleanTrue);
++        } else {
++            OSSafeReleaseNULL(sweepTimer);
++        }
++    }
++
+     return true;
+ }
+ 
+ void AsusSMC::stop(IOService *provider) {
++    if (sweepTimer) {
++        sweepTimer->cancelTimeout();
++        if (workloop) workloop->removeEventSource(sweepTimer);
++        OSSafeReleaseNULL(sweepTimer);
++    }
+     if (poller) {
+         poller->cancelTimeout();
+     }
+@@ -160,9 +190,13 @@
+         case kSetKeyboardBacklightMessage:
+         {
+             if (hasKeyboardBacklight) {
+-                OSNumber *arg = OSNumber::withNumber(*((uint16_t *)argument) / 16, 16);
+-                atkDevice->evaluateObject("SKBV", NULL, (OSObject **)&arg, 1);
+-                arg->release();
++                uint16_t raw = *((uint16_t *)argument);
++                int level = (raw * kKBMaxLevel) / 0xFFB;
++                if (level < 0) level = 0;
++                if (level > kKBMaxLevel) level = kKBMaxLevel;
++                keyboardBacklightLevel = level;
++                if (keyboardBacklightLevel >= kKBLevelCount) keyboardBacklightLevel = kKBLevelCount - 1;
++                writeKBBN(kKBLevels[keyboardBacklightLevel]);
+             }
+             break;
+         }
+@@ -407,7 +441,7 @@
+     }
+ 
+     // Check keyboard backlight support
+-    if (atkDevice->validateObject("SKBV") == kIOReturnSuccess) {
++    if (atkDevice->validateObject("SKBB") == kIOReturnSuccess) {
+         SYSLOG("atk", "Keyboard backlight is supported");
+         hasKeyboardBacklight = true;
+     } else {
+@@ -415,6 +449,40 @@
+         DBGLOG("atk", "Keyboard backlight is not supported");
+     }
+     setProperty("IsKeyboardBacklightSupported", hasKeyboardBacklight);
++
++    if (hasKeyboardBacklight) {
++        uint32_t kbbn = 0xFFFFFFFF, kbbf = 0xFFFFFFFF, kbbs = 0xFFFFFFFF;
++        atkDevice->evaluateInteger("GKBF", &kbbf);
++        int ecLevel = 0;
++        if (atkDevice->evaluateInteger("GKBS", &kbbs) == kIOReturnSuccess && kbbs <= (uint32_t)kKBMaxLevel) {
++            ecLevel = (int)kbbs;
++        } else if (atkDevice->evaluateInteger("GKBB", &kbbn) == kIOReturnSuccess) {
++            ecLevel = (kbbn & 0x80) ? (int)(kbbn & 0x7F) : 0;
++        }
++        keyboardBacklightLevel = ecLevel;
++        if (keyboardBacklightLevel < 0) keyboardBacklightLevel = 0;
++        if (keyboardBacklightLevel >= kKBLevelCount) keyboardBacklightLevel = kKBLevelCount - 1;
++        setProperty("KBBFBoot", (unsigned long long)kbbf, 32);
++        setProperty("KBBNBoot", (unsigned long long)kbbn, 32);
++        setProperty("KBBSBoot", (unsigned long long)kbbs, 32);
++        setProperty("KBBootLevel", (unsigned long long)keyboardBacklightLevel, 32);
++        SYSLOG("atk", "KBBF 0x%x KBBN 0x%x level %d", kbbf, kbbn, keyboardBacklightLevel);
++
++        uint32_t kbbnSet = 0;
++        if (PE_parse_boot_argn("kbbl", &kbbnSet, sizeof(kbbnSet))) {
++            int idx = (int)kbbnSet;
++            if (idx >= kKBLevelCount) idx = kKBLevelCount - 1;
++            writeKBBN(kKBLevels[idx]);
++            atkDevice->evaluateInteger("GKBB", &kbbn);
++            setProperty("KBBNAfter", (unsigned long long)kbbn, 32);
++        }
++
++        if (checkKernelArgument("-kbtest")) {
++            kbTestMode = true;
++            setProperty("KBTestMode", kOSBooleanTrue);
++            readECRegisters();
++        }
++    }
+ 
+     // Turn on ALS sensor
+     toggleALS(true);
+@@ -525,7 +593,8 @@
+             break;
+ 
+         case 0x6B: // Fn + F9, Touchpad On/Off
+-            toggleTouchpad();
++            if (kbTestMode) runKBTest();
++            else toggleTouchpad();
+             break;
+ 
+         case 0x5E:
+@@ -543,20 +612,30 @@
+             toggleAirplaneMode();
+             break;
+ 
+-        case 0xC6:
+-        case 0xC7: // ALS Notifcations
++        case 0xC6: // ALS Notifcations
+             // ignore
+             break;
+ 
++        case 0xC7: // Fn + F7 (hotkey mode off)
++            if (hasKeyboardBacklight) {
++                if (kbTestMode) runKBTest();
++                else stepKeyboardBacklight(+1);
++            }
++            break;
++
+         case 0xC5: // Keyboard Backlight Down
+             if (hasKeyboardBacklight) {
+                 dispatchTCReport(kHIDUsage_AV_TopCase_IlluminationDown);
++                if (kbTestMode) runKBTest();
++                else stepKeyboardBacklight(-1);
+             }
+             break;
+ 
+         case 0xC4: // Keyboard Backlight Up
+             if (hasKeyboardBacklight) {
+                 dispatchTCReport(kHIDUsage_AV_TopCase_IlluminationUp);
++                if (kbTestMode) runKBTest();
++                else stepKeyboardBacklight(+1);
+             }
+             break;
+ 
+@@ -568,9 +647,134 @@
+             break;
+     }
+ 
+-    DBGLOG("atk", "Received key %d(0x%x)", code, code);
++    SYSLOG("atk", "Received key %d(0x%x)", code, code);
++    setProperty("LastATKCode", (unsigned long long)code, 32);
++}
++
++IOReturn AsusSMC::writeKBBN(uint8_t value) {
++    OSNumber *arg = OSNumber::withNumber(value, 8);
++    IOReturn ret = atkDevice->evaluateObject("SKBB", NULL, (OSObject **)&arg, 1);
++    arg->release();
++    setProperty("KBBLWriteRet", (unsigned long long)(uint32_t)ret, 32);
++    return ret;
++}
++
++void AsusSMC::stepKeyboardBacklight(int delta) {
++    uint32_t before = 0xFFFFFFFF;
++    atkDevice->evaluateInteger("GKBB", &before);
++
++    if (delta > 0) {
++        keyboardBacklightLevel = (keyboardBacklightLevel + 1) % kKBLevelCount;
++    } else {
++        keyboardBacklightLevel = (keyboardBacklightLevel + kKBLevelCount - 1) % kKBLevelCount;
++    }
++
++    IOReturn ret = writeKBBN(kKBLevels[keyboardBacklightLevel]);
++
++    uint32_t readback = 0xFFFFFFFF;
++    atkDevice->evaluateInteger("GKBB", &readback);
++    setProperty("KBLevel", (unsigned long long)keyboardBacklightLevel, 32);
++    setProperty("KBBNBefore", (unsigned long long)before, 32);
++    setProperty("KBBNAfter", (unsigned long long)readback, 32);
++    SYSLOG("atk", "Keyboard backlight level %d write ret 0x%x KBBN before 0x%x after 0x%x", keyboardBacklightLevel, ret, before, readback);
++}
++
++void AsusSMC::sweepKBBN() {
++    if (sweepValue > kKBMaxLevel) {
++        if (sweepTimer) {
++            sweepTimer->cancelTimeout();
++            if (workloop) workloop->removeEventSource(sweepTimer);
++            OSSafeReleaseNULL(sweepTimer);
++        }
++        return;
++    }
++
++    writeKBBN(kbLevelValue(sweepValue));
++    setProperty("SweepValue", (unsigned long long)sweepValue, 32);
++    sweepValue++;
++
++    if (sweepTimer) sweepTimer->setTimeoutMS(2000);
++}
++
++uint32_t AsusSMC::readECReg(const char *method) {
++    uint32_t value = 0xFFFFFFFF;
++    atkDevice->evaluateInteger(method, &value);
++    return value;
++}
++
++void AsusSMC::writeECReg(int id, uint8_t value) {
++    static const char *methods[] = {"SKBB", "SKBS", "SKSP", "SKMC", "SKL1", "SKL2", "SKL3", "SKBC", "SKBA", "SK5B"};
++    if (id < 0 || id > 9) return;
++    OSNumber *arg = OSNumber::withNumber(value, 8);
++    atkDevice->evaluateObject(methods[id], NULL, (OSObject **)&arg, 1);
++    arg->release();
+ }
+ 
++void AsusSMC::writeECRam(uint8_t offset, uint8_t value) {
++    OSObject *args[2] = {OSNumber::withNumber(offset, 8), OSNumber::withNumber(value, 8)};
++    atkDevice->evaluateObject("EWRB", NULL, args, 2);
++    args[0]->release();
++    args[1]->release();
++}
++
++uint32_t AsusSMC::readECRam(uint8_t offset) {
++    uint32_t value = 0xFFFFFFFF;
++    OSNumber *arg = OSNumber::withNumber(offset, 8);
++    atkDevice->evaluateInteger("ERDB", &value, (OSObject **)&arg, 1);
++    arg->release();
++    return value;
++}
++
++void AsusSMC::readECRegisters() {
++    setProperty("EKBBN", (unsigned long long)readECReg("GKBB"), 32);
++    setProperty("EKBBS", (unsigned long long)readECReg("GKBS"), 32);
++    setProperty("EKBSP", (unsigned long long)readECReg("GKSP"), 32);
++    setProperty("EKBMC", (unsigned long long)readECReg("GKMC"), 32);
++    setProperty("EKL1", (unsigned long long)readECReg("GKL1"), 32);
++    setProperty("EKL2", (unsigned long long)readECReg("GKL2"), 32);
++    setProperty("EKL3", (unsigned long long)readECReg("GKL3"), 32);
++    setProperty("EKLM", (unsigned long long)readECReg("GKLM"), 32);
++    setProperty("EKLT", (unsigned long long)readECReg("GKLT"), 32);
++    setProperty("EKBF", (unsigned long long)readECReg("GKBF"), 32);
++    setProperty("EKBLC", (unsigned long long)readECReg("GKBC"), 32);
++    setProperty("EKBLA", (unsigned long long)readECReg("GKBA"), 32);
++    setProperty("EKB5B", (unsigned long long)readECReg("GK5B"), 32);
++}
++
++void AsusSMC::runKBTest() {
++    struct KBTestStep { int reg1; uint8_t val1; int reg2; uint8_t val2; };
++    static const KBTestStep steps[] = {
++        {0, 0x81, -1, 0}, {0, 0x82, -1, 0}, {0, 0x83, -1, 0},
++        {10, 0x3F, -1, 3}, {10, 0x2E, -1, 3}, {10, 0x2E, -1, 1}, {10, 0x2E, -1, 2},
++        {10, 0xA5, -1, 0x83}, {10, 0xA5, -1, 0x03},
++        {10, 0x22, -1, 0xFF}, {10, 0x2F, -1, 1},
++        {10, 0x3F, -1, 0}, {10, 0x2E, -1, 0},
++    };
++    static const int stepCount = sizeof(steps) / sizeof(steps[0]);
++
++    if (kbTestIndex >= stepCount) {
++        setProperty("TestDone", kOSBooleanTrue);
++        return;
++    }
++
++    const KBTestStep &step = steps[kbTestIndex];
++    if (step.reg1 == 10) writeECRam(step.val1, step.val2);
++    else writeECReg(step.reg1, step.val1);
++    if (step.reg2 >= 0) writeECReg(step.reg2, step.val2);
++
++    setProperty("TestIndex", (unsigned long long)kbTestIndex, 32);
++    setProperty("TestReg1", (unsigned long long)step.reg1, 32);
++    setProperty("TestVal1", (unsigned long long)step.val1, 32);
++    setProperty("TestReg2", (unsigned long long)step.reg2, 32);
++    setProperty("TestVal2", (unsigned long long)step.val2, 32);
++    readECRegisters();
++    setProperty("ERD3F", (unsigned long long)readECRam(0x3F), 32);
++    setProperty("ERD2E", (unsigned long long)readECRam(0x2E), 32);
++    setProperty("ERDA5", (unsigned long long)readECRam(0xA5), 32);
++
++    kbTestIndex++;
++}
++
+ void AsusSMC::letSleep() {
+     kev.sendMessage(kDaemonSleep, 0, 0);
+ }
+@@ -586,6 +790,7 @@
+ 
+     if (isTouchpadEnabled) {
+         setProperty("IsTouchpadEnabled", true);
++    setProperty("IOUserClientClass", "AsusSMCUserClient");
+         DBGLOG("atk", "Enabled Touchpad");
+     } else {
+         setProperty("IsTouchpadEnabled", false);
+@@ -934,3 +1139,78 @@
+     // It is not safe to unload VirtualSMC plugins!
+     return KERN_FAILURE;
+ }
++
++
++// MARK: - user client
++
++class AsusSMCUserClient : public IOUserClient {
++    OSDeclareDefaultStructors(AsusSMCUserClient)
++
++public:
++    bool initWithTask(task_t owningTask, void *securityToken, UInt32 type, OSDictionary *properties) override;
++    bool start(IOService *provider) override;
++    IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *arguments,
++                            IOExternalMethodDispatch *dispatch, OSObject *target, void *reference) override;
++    IOReturn clientClose() override;
++
++private:
++    AsusSMC *asus {nullptr};
++};
++
++OSDefineMetaClassAndStructors(AsusSMCUserClient, IOUserClient)
++
++bool AsusSMCUserClient::initWithTask(task_t owningTask, void *securityToken, UInt32 type, OSDictionary *properties) {
++    return IOUserClient::initWithTask(owningTask, securityToken, type, properties);
++}
++
++bool AsusSMCUserClient::start(IOService *provider) {
++    if (!IOUserClient::start(provider)) {
++        return false;
++    }
++    asus = OSDynamicCast(AsusSMC, provider);
++    return asus != nullptr;
++}
++
++IOReturn AsusSMCUserClient::clientClose() {
++    asus = nullptr;
++    terminate();
++    return kIOReturnSuccess;
++}
++
++IOReturn AsusSMCUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *arguments,
++                                           IOExternalMethodDispatch *dispatch, OSObject *target, void *reference) {
++    if (!asus) {
++        return kIOReturnNotAttached;
++    }
++
++    switch (selector) {
++        case 0:
++            if (arguments->scalarInputCount < 1) {
++                return kIOReturnBadArgument;
++            }
++            return asus->setBacklightLevelUser((uint32_t)arguments->scalarInput[0]);
++        case 1:
++            if (arguments->scalarOutputCount < 1) {
++                return kIOReturnBadArgument;
++            }
++            arguments->scalarOutput[0] = asus->getBacklightLevelUser();
++            return kIOReturnSuccess;
++        default:
++            return kIOReturnUnsupported;
++    }
++}
++
++IOReturn AsusSMC::setBacklightLevelUser(uint32_t level) {
++    if (!hasKeyboardBacklight) {
++        return kIOReturnUnsupported;
++    }
++    if (level >= (uint32_t)kKBLevelCount) {
++        level = kKBLevelCount - 1;
++    }
++    keyboardBacklightLevel = (int)level;
++    return writeKBBN(kKBLevels[keyboardBacklightLevel]);
++}
++
++uint64_t AsusSMC::getBacklightLevelUser() {
++    return (uint64_t)keyboardBacklightLevel;
++}
+--- a/AsusSMC/AsusSMC.hpp
++++ b/AsusSMC/AsusSMC.hpp
+@@ -52,6 +52,17 @@
+     void toggleALS(bool state);
+     void toggleBatteryConservativeMode(bool state);
+     void displayOff();
++    void stepKeyboardBacklight(int delta);
++    IOReturn setBacklightLevelUser(uint32_t level);
++    uint64_t getBacklightLevelUser();
++    IOReturn writeKBBN(uint8_t value);
++    void sweepKBBN();
++    void runKBTest();
++    void readECRegisters();
++    uint32_t readECReg(const char *method);
++    void writeECReg(int id, uint8_t value);
++    void writeECRam(uint8_t offset, uint8_t value);
++    uint32_t readECRam(uint8_t offset);
+ 
+ private:
+     struct guid_block {
+@@ -140,6 +151,11 @@
+     bool isPanelBackLightOn {true};
+     bool isTACHAvailable {false};
+     bool isBatteryRSOCAvailable {false};
++    int keyboardBacklightLevel {0};
++    IOTimerEventSource *sweepTimer {nullptr};
++    int sweepValue {0};
++    bool kbTestMode {false};
++    int kbTestIndex {0};
+ 
+     uint32_t panelBrightnessLevel {16};
+     char backlightEntry[1000];
